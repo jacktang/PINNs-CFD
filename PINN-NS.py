@@ -214,7 +214,7 @@ losshistory, train_state = model.train(epochs = 10000, display_every = 100, mode
 dde.saveplot(losshistory, train_state, issave = True, isplot = True)
 
 model.compile(optimizer = 'L-BFGS-B', loss_weights = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])
-losshistory, train_state = model.train(epochs = 10000, display_every = 100, model_save_path = './')
+losshistory, train_state = model.train(display_every = 100, model_save_path = './')
 dde.saveplot(losshistory, train_state, issave = True, isplot = True)
 
 # Plotting tool: thanks to @q769855234 code snippet
