@@ -191,7 +191,7 @@ net = dde.nn.FNN(layer_size, activation, initializer)
 
 # Model definition
 model = dde.Model(data, net)
-model.compile(optimizer = 'adam', lr = 5e-4, loss_weights = [1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2]) # Giving more weight to bcs (actually no needed for hard imposed ones)
+model.compile(optimizer = 'adam', lr = 5e-4, loss_weights = [1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2]) # Giving more weight to bcs
 
 # Training
 losshistory, train_state = model.train(epochs = 10000, display_every = 100, model_save_path = './')
