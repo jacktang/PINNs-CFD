@@ -200,8 +200,8 @@ dde.saveplot(losshistory, train_state, issave = True, isplot = True)
 model.compile(optimizer = 'L-BFGS-B', loss_weights = [1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2])
 model.train_step.optimizer_kwargs = {'options': {'maxcor': 50, 
                                                    'ftol': 1.0 * np.finfo(float).eps, 
-                                                   'maxfun':  60000, 
-                                                   'maxiter': 60000, 
+                                                   'maxfun':  50000, 
+                                                   'maxiter': 50000, 
                                                    'maxls': 50}}
 losshistory, train_state = model.train(display_every = 100, model_save_path = './')
 dde.saveplot(losshistory, train_state, issave = True, isplot = True)
