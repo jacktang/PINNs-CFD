@@ -1,10 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Fri Apr 22 14:27:42 2022
-
-@author: Riccardo
-"""
-
 import deepxde as dde
 import numpy as np
 import tensorflow as tf
@@ -13,16 +6,20 @@ from matplotlib import pyplot as plt
 dde.config.set_random_seed(48)
 dde.config.set_default_float('float64')
 
-xmin, xmax = -4.0, 6.0
-ymin, ymax = -4.0, 4.0
+xmin, xmax = 0.0, 1.0
+ymin, ymax = 0.0, 0.7
 
-def boundaryNACA4D(M, P, SS, c, n):
+rho  = 1.0
+mu   = 0.02
+umax = 1.0
+
+def boundaryNACA4D(M, P, SS, c, n, offset_x, offset_y):
     """
     Compute the coordinates of a NACA 4-digits airfoil
     
     Args:
         M:  maximum camber value (*100)
-        P:  position of the maximum camber (*10)
+        P:  position of the maximum camber alog the chord (*10)
         SS: maximum thickness (*100)
         c:  chord length
         n:  the total points sampled will be 2*n
@@ -81,146 +78,137 @@ def boundaryNACA4D(M, P, SS, c, n):
     x[n : 2 * n + 1] = xU
     y[n : 2 * n + 1] = yU
     
-    return np.vstack((x, y)).T
+    return np.vstack((x + offset_x, y + offset_y)).T
 
-
-def navier_stokes(x, y): 
+def navier_stokes(x, y):
     """
-    System of PDEs to be minimized: incompressible Navier-Stokes equations (V-P formulation)
+    System of PDEs to be minimized: incompressible Navier-Stokes equation in the
+    continuum-mechanics based formulations.
+    
     """
-    Re = 50 #Reynolds number
-    u, v, p = y[:, 0:1], y[:, 1:2], y[:, 2:3]
+    psi, p, sigma11, sigma22, sigma12 = y[:, 0:1], y[:, 1:2], y[:, 2:3], y[:, 3:4], y[:, 4:5]
     
-    u_x = dde.grad.jacobian(y, x, i = 0, j = 0)
-    u_y = dde.grad.jacobian(y, x, i = 0, j = 1)
+    u =   dde.grad.jacobian(y, x, i = 0, j = 1)
+    v = - dde.grad.jacobian(y, x, i = 0, j = 0)
     
-    v_x = dde.grad.jacobian(y, x, i = 1, j = 0)
-    v_y = dde.grad.jacobian(y, x, i = 1, j = 1)
+    u_x = dde.grad.jacobian(u, x, i = 0, j = 0)
+    u_y = dde.grad.jacobian(u, x, i = 0, j = 1)
     
-    u_xx = dde.grad.hessian(y, x, i = 0, j = 0, component = 0)
-    u_yy = dde.grad.hessian(y, x, i = 1, j = 1, component = 0)
+    v_x = dde.grad.jacobian(v, x, i = 0, j = 0)
+    v_y = dde.grad.jacobian(v, x, i = 0, j = 1)
     
-    v_xx = dde.grad.hessian(y, x, i = 0, j = 0, component = 1)
-    v_yy = dde.grad.hessian(y, x, i = 1, j = 1, component = 1)
+    sigma11_x = dde.grad.jacobian(y, x, i = 2, j = 0)
+    sigma12_x = dde.grad.jacobian(y, x, i = 4, j = 0)
+    sigma12_y = dde.grad.jacobian(y, x, i = 4, j = 1)
+    sigma22_y = dde.grad.jacobian(y, x, i = 3, j = 1)
     
-    p_x = dde.grad.jacobian(y, x, i = 2, j = 0)
-    p_y = dde.grad.jacobian(y, x, i = 2, j = 1)
+    continuumx = rho * (u * u_x + v * u_y) - sigma11_x - sigma12_y
+    continuumy = rho * (u * v_x + v * v_y) - sigma12_x - sigma22_y
     
-    continuity = u_x + v_y 
-    momentum_x = u * u_x + v * u_y + p_x - 1.0 / Re * (u_xx + u_yy)
-    momentum_y = u * v_x + v * v_y + p_y - 1.0 / Re * (v_xx + v_yy)
+    constitutive1 = - p + 2 * mu * u_x - sigma11
+    constitutive2 = - p + 2 * mu * v_y - sigma22
+    constitutive3 = mu * (u_y + v_x) - sigma12
+    constitutive4 = p + (sigma11 + sigma22) / 2
     
-    return [continuity, momentum_x, momentum_y]
+    return continuumx, continuumy, constitutive1, constitutive2, constitutive3, constitutive4
 
-# Geometry definition
+# Geometry defintion
 farfield = dde.geometry.Rectangle([xmin, ymin], [xmax, ymax])
-airfoil  = dde.geometry.Polygon(boundaryNACA4D(0, 0, 12, 1, 100)) 
+airfoil  = dde.geometry.Polygon(boundaryNACA4D(0, 0, 12, 0.2, 250, 0.20, 0.35))
 geom     = dde.geometry.CSGDifference(farfield, airfoil)
+
+inner_rec  = dde.geometry.Rectangle([0.15, 0.28], [0.28, 0.42])
+outer_dom  = dde.geometry.CSGDifference(farfield, inner_rec)
+outer_dom  = dde.geometry.CSGDifference(outer_dom, airfoil)
+inner_dom  = dde.geometry.CSGDifference(inner_rec, airfoil)
+
+inner_points = inner_dom.random_points(10000) # refining the collocation points close to the airfoil leading edge
+outer_points = outer_dom.random_points(40000)
+
+farfield_points = farfield.random_boundary_points(1280)
+airfoil_points  = boundaryNACA4D(0, 0, 12, 0.2, 125, 0.20, 0.35)
+
+points = np.append(inner_points, outer_points, axis = 0)
+points = np.append(points, farfield_points, axis = 0)
+points = np.append(points, airfoil_points, axis = 0)
 
 # Boundaries definition
 def boundary_farfield_inlet(x, on_boundary):
     return on_boundary and np.isclose(x[0], xmin)
 
-def boundary_farfield_top(x, on_boundary):
-    return on_boundary and np.isclose(x[1], ymax)
+def boundary_farfield_top_bottom(x, on_boundary):
+    return on_boundary and (np.isclose(x[1], ymax) or np.isclose(x[1], ymin))
 
 def boundary_farfield_outlet(x, on_boundary):
     return on_boundary and np.isclose(x[0], xmax)
 
-def boundary_farfield_bottom(x, on_boundary):
-    return on_boundary and np.isclose(x[1], ymin)
-
 def boundary_airfoil(x, on_boundary):
-    # Note: return on_boundary and airfoil.on_boundary(x) gives an error (Problem in dde Polygon method on_boundary?)
-    return on_boundary and (not farfield.on_boundary(x))  
+    return on_boundary and (not farfield.on_boundary(x))
 
 # Boundary values definition
-def funU(x):
-    return 1.0
+def fun_u_farfield(x, y, _):
+    return dde.grad.jacobian(y, x, i = 0, j = 1) - 1.0
 
-def funV(x):
+def fun_no_slip_u(x, y, _):
+    return dde.grad.jacobian(y, x, i = 0, j = 1)
+
+def fun_no_slip_v(x, y, _):
+    return - dde.grad.jacobian(y, x, i = 0, j = 0)
+
+def funP(x):
     return 0.0
+  
+# Boundary conditions assembly   
+bc_inlet_u = dde.OperatorBC(geom, fun_u_farfield, boundary_farfield_inlet)
+bc_inlet_v = dde.OperatorBC(geom, fun_no_slip_v, boundary_farfield_inlet)
 
-#def funP(x):
-#    return 0.0
- 
-# Boundary conditions assembly    
-bc_inlet_u = dde.DirichletBC(geom, funU, boundary_farfield_inlet, component = 0)
-bc_inlet_v = dde.DirichletBC(geom, funV, boundary_farfield_inlet, component = 1)
+bc_top_bottom_u = dde.OperatorBC(geom, fun_u_farfield, boundary_farfield_top_bottom)
+bc_top_bottom_v = dde.OperatorBC(geom, fun_no_slip_v, boundary_farfield_top_bottom)
 
-bc_top_u = dde.DirichletBC(geom, funU, boundary_farfield_top, component = 0)
-bc_top_v = dde.DirichletBC(geom, funV, boundary_farfield_top, component = 1)
+bc_outlet_p = dde.DirichletBC(geom, funP, boundary_farfield_outlet, component = 1)
 
-bc_bottom_u = dde.DirichletBC(geom, funU, boundary_farfield_bottom, component = 0)
-bc_bottom_v = dde.DirichletBC(geom, funV, boundary_farfield_bottom, component = 1)
+bc_airfoil_u = dde.OperatorBC(geom, fun_no_slip_u, boundary_airfoil)
+bc_airfoil_v = dde.OperatorBC(geom, fun_no_slip_v, boundary_airfoil)
 
-#bc_outlet_p = dde.DirichletBC(geom, funP, boundary_farfield_outlet, component = 2)
-#bc_outlet_u = dde.NeumannBC(geom, funV, boundary_farfield_outlet, component = 0)
-
-bc_airfoil_u = dde.DirichletBC(geom, funV, boundary_airfoil, component = 0)
-bc_airfoil_v = dde.DirichletBC(geom, funV, boundary_airfoil, component = 1)
-
-bcs = [bc_inlet_u, bc_inlet_v, bc_top_u, bc_top_v, bc_bottom_u, bc_bottom_v, bc_airfoil_u, bc_airfoil_v]
+bcs = [bc_inlet_u, bc_inlet_v, bc_top_bottom_u, bc_top_bottom_v, bc_outlet_p, bc_airfoil_u, bc_airfoil_v]
 
 # Problem setup
-data = dde.data.PDE(geom, navier_stokes, bcs, num_domain = 10000, num_boundary = 7500, num_test = 5000)
+data = dde.data.PDE(geom, navier_stokes, bcs, num_domain = 0, num_boundary = 0, num_test = 5000, anchors = points)
+
+# Training points plot
+plt.figure(figsize = (32, 18))
+plt.scatter(data.train_x_all[:,0], data.train_x_all[:,1], s = 0.3)
+plt.axis('equal')
+
+dde.config.set_default_float('float64') # for the L-BFGS-B optimizer
 
 # Neural network definition
-layer_size  = [2] + [50] * 6 + [3]
-n           = 10
-activation  = f"LAAF-{n} tanh" 
+layer_size  = [2] + [40] * 8 + [5]
+activation  = 'tanh' 
 initializer = 'Glorot uniform'
 
 net = dde.nn.FNN(layer_size, activation, initializer)
 
-# Enforcing hard boundary conditions where easily possible 
-def modify_output(X, Y):
-    x, y     = X[:, 0:1], X[:, 1:2]
-    u, v, p  = Y[:, 0:1], Y[:, 1:2], Y[:, 2:3]
-    u_new    = (x - xmin) * (y - ymin) * (y - ymax) * u / 100 + 1.0 #Note: divided by 100 to balance the effect of pre-multiplications
-    v_new    = (x - xmin) * (y - ymin) * (y - ymax) * v / 20
-    
-    return tf.concat((u_new, v_new, p), axis=1)
-
-net.apply_output_transform(modify_output)
-
 # Model definition
 model = dde.Model(data, net)
-model.compile(optimizer = 'adam', lr = 1e-3, loss_weights = [1, 1, 1, 10, 10, 10, 10, 10, 10, 10, 10]) # Giving more weight to bcs (actually no needed for hard imposed ones)
+model.compile(optimizer = 'adam', lr = 5e-4, loss_weights = [1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2]) # Giving more weight to bcs (actually no needed for hard imposed ones)
 
-#resampler      = dde.callbacks.PDEResidualResampler(period=1000)
-#early_stopping = dde.callbacks.EarlyStopping(patience = 40000)
-
-# Training strategy:
-    # 5000 epochs with adam and lr = 1e-3
-    # 5000 epochs with adam and lr = 1e-4
-    # 10000 epochs with adam and lr = 1e-5
-    # 10000 epochs with adam and lr = 1e-6
-    # L-BFGS-B at the end to fine tuning the network parameters
-
-losshistory, train_state = model.train(epochs = 5000, display_every = 100, model_save_path = './')
-dde.saveplot(losshistory, train_state, issave = True, isplot = True)
-
-model.compile(optimizer = 'adam', lr = 1e-4, loss_weights = [1, 1, 1, 10, 10, 10, 10, 10, 10, 10, 10])
-losshistory, train_state = model.train(epochs = 5000, display_every = 100, model_save_path = './')
-dde.saveplot(losshistory, train_state, issave = True, isplot = True)
-
-model.compile(optimizer = 'adam', lr = 1e-5, loss_weights = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])
+# Training
 losshistory, train_state = model.train(epochs = 10000, display_every = 100, model_save_path = './')
 dde.saveplot(losshistory, train_state, issave = True, isplot = True)
 
-model.compile(optimizer = 'adam', lr = 1e-6, loss_weights = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])
-losshistory, train_state = model.train(epochs = 10000, display_every = 100, model_save_path = './')
-dde.saveplot(losshistory, train_state, issave = True, isplot = True)
-
-model.compile(optimizer = 'L-BFGS-B', loss_weights = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])
+model.compile(optimizer = 'L-BFGS-B', loss_weights = [1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2])
+model.train_step.optimizer_kwargs = {'options': {'maxcor': 50, 
+                                                   'ftol': 1.0 * np.finfo(float).eps, 
+                                                   'maxfun':  60000, 
+                                                   'maxiter': 60000, 
+                                                   'maxls': 50}}
 losshistory, train_state = model.train(display_every = 100, model_save_path = './')
 dde.saveplot(losshistory, train_state, issave = True, isplot = True)
 
-# Plotting tool: thanks to @q769855234 code snippet
+# Postprocessing: plotting the results
 dx = 0.01
 dy = 0.01
-dt = 0.01
 x = np.arange(xmin, xmax + dy, dx)
 y = np.arange(ymin, ymax + dy, dy)
 
@@ -230,30 +218,54 @@ ys = np.vstack((y,)*len(x)).T.reshape(-1)
 X[:, 0] = xs
 X[:, 1] = ys
 
+def getU(x, y):   
+    return dde.grad.jacobian(y, x, i = 0, j = 1) 
+
+def getV(x, y): 
+    return - dde.grad.jacobian(y, x, i = 0, j = 0)  
+
+def getP(x, y):
+    return y[:, 1:2]
+
 # Model predictions generation
-Y = model.predict(X)
+u = model.predict(X, operator = getU)
+v = model.predict(X, operator = getV)
+p = model.predict(X, operator = getP)
 
-u = Y[:, 0].reshape(len(y), len(x))
-v = Y[:, 1].reshape(len(y), len(x))
-p = Y[:, 2].reshape(len(y), len(x))
+#for i in range(len(X)):
+#    if airfoil.inside(np.array([X[i]]))[0]:
+#        u[i] = 0.0
+#        v[i] = 0.0
+        
+u = u.reshape(len(y), len(x))
+v = v.reshape(len(y), len(x))
+p = p.reshape(len(y), len(x))
 
-plt.figure(figsize = (16, 9))
-plt.streamplot(x, y, u, v, density = 1.5)
-plt.contourf(x, y, p)
-plt.plot(boundaryNACA4D(0, 0, 12, 1, 100)[:, 0], boundaryNACA4D(0, 0, 12, 1, 100)[:, 1])
-plt.colorbar()
-plt.savefig('NACA0012NSp.png')
+airfoil_plot = boundaryNACA4D(0, 0, 12, 0.2, 150, offset_x = 0.20, offset_y = 0.35)
 
-plt.figure(figsize = (16, 9))
-plt.streamplot(x, y, u, v, density = 1.5)
-plt.contourf(x, y, u)
-plt.plot(boundaryNACA4D(0, 0, 12, 1, 100)[:, 0], boundaryNACA4D(0, 0, 12, 1, 100)[:, 1])
-plt.colorbar()
-plt.savefig('NACA0012NSu.png')
+fig1, ax1 = plt.subplots(figsize = (16, 9))
+#ax1.streamplot(x, y, u, v, density = 1.5)
+clev = np.arange(p.min(), 2, 0.001)
+cnt1 = ax1.contourf(x, y, p, clev, cmap = plt.cm.coolwarm, extend='both')
+plt.axis('equal')
+plt.fill(airfoil_plot[:, 0], airfoil_plot[:, 1], '#c0c0c0')
+fig1.colorbar(cnt1)
+plt.savefig('NACA0012NS0.png')
 
-plt.figure(figsize = (16, 9))
-plt.streamplot(x, y, u, v, density = 1.5)
-plt.contourf(x, y, v)
-plt.plot(boundaryNACA4D(0, 0, 12, 1, 100)[:, 0], boundaryNACA4D(0, 0, 12, 1, 100)[:, 1])
-plt.colorbar()
-plt.savefig('NACA0012NSv.png')
+fig2, ax2 = plt.subplots(figsize = (16, 9))
+#ax2.streamplot(x, y, u, v, density = 1.5)
+clev = np.arange(0, u.max(), 0.001)
+cnt2 = ax2.contourf(x, y, u, clev, cmap = plt.cm.coolwarm, extend='both')
+plt.axis('equal')
+plt.fill(airfoil_plot[:, 0], airfoil_plot[:, 1], '#c0c0c0')
+fig2.colorbar(cnt2)
+plt.savefig('NACA0012NS1.png')
+
+fig3, ax3 = plt.subplots(figsize = (16, 9))
+#ax3.streamplot(x, y, u, v, density = 1.5)
+clev = np.arange(-0.235, v.max(), 0.001)
+cnt3 = ax3.contourf(x, y, v, clev, cmap = plt.cm.coolwarm, extend='both')
+plt.axis('equal')
+plt.fill(airfoil_plot[:, 0], airfoil_plot[:, 1], '#c0c0c0')
+fig3.colorbar(cnt3)
+plt.savefig('NACA0012NS2.png')
